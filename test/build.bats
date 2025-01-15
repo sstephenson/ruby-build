@@ -369,7 +369,7 @@ make install
 OUT
 }
 
-@test "install bundled OpenSSL" {
+@test "install bundled OpenSSL on Linux" {
   cached_tarball "openssl-1.1.1w" config
   cached_tarball "ruby-3.2.0" configure
 
@@ -378,9 +378,7 @@ OUT
 
   stub_repeated uname '-s : echo Linux'
   stub_repeated brew false
-  stub cc \
-    '-xc -E - : echo "OpenSSL 1.0.1a  1 Aug 2023"' \
-    '--version : echo gcc'
+  stub cc '-xc -E - : echo "OpenSSL 1.0.1a  1 Aug 2023"' # system_openssl_version
   stub openssl "version -d : echo 'OPENSSLDIR: \"${TMP}/ssl\"'"
   stub_make_install "install_sw"
   stub_make_install
@@ -395,11 +393,14 @@ DEF
   unstub uname
   unstub brew
   unstub cc
-  # unstub openssl
+  # Depending on certain system certificate files being present under /etc/,
+  # `openssl version -d` might not have been called, so avoid unstubbing it
+  # since that would verify the number of invocations.
+  #unstub openssl
   unstub make
 
   assert_build_log <<OUT
-openssl-1.1.1w: [--prefix=${INSTALL_ROOT}/openssl,--openssldir=${INSTALL_ROOT}/openssl/ssl,--libdir=lib,zlib-dynamic,no-ssl3,shared,-Wl,-rpath=${INSTALL_ROOT}/openssl/lib]
+openssl-1.1.1w: [--prefix=${INSTALL_ROOT}/openssl,--openssldir=${INSTALL_ROOT}/openssl/ssl,--libdir=lib,zlib-dynamic,no-ssl3,shared,-Wl,-rpath,${INSTALL_ROOT}/openssl/lib]
 make -j 2
 make install_sw install_ssldirs
 ruby-3.2.0: [--prefix=$INSTALL_ROOT,--with-openssl-dir=$INSTALL_ROOT/openssl,--with-ext=openssl,psych,+] PKG_CONFIG_PATH=${TMP}/install/openssl/lib/pkgconfig
@@ -408,33 +409,52 @@ make install
 OUT
 }
 
-@test "install OpenSSL with clang" {
+@test "install bundled OpenSSL on macOS" {
   cached_tarball "openssl-1.1.1w" config
+  cached_tarball "ruby-3.2.0" configure
 
-  mkdir -p "${TMP}/ssl/certs"
-  touch "${TMP}/ssl/cert.pem"
-
-  stub_repeated uname '-s : echo Linux'
-  stub cc '--version : echo "Hello clang 1.2.3"'
-  stub openssl "version -d : echo 'OPENSSLDIR: \"${TMP}/ssl\"'"
+  stub_repeated uname '-s : echo Darwin'
+  stub security \
+    'find-certificate -a -p /Library/Keychains/System.keychain : echo "System.keychain"' \
+    'find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain : echo "SystemRootCertificates.keychain"'
+  stub_repeated brew false
+  stub cc '-xc -E - : echo "OpenSSL 1.0.1a  1 Aug 2023"' # system_openssl_version
+  stub openssl
   stub_make_install "install_sw"
+  stub_make_install
 
   mkdir -p "$INSTALL_ROOT"/openssl/ssl # OPENSSLDIR
   run_inline_definition <<DEF
-install_package "openssl-1.1.1w" "https://www.openssl.org/source/openssl-1.1.1w.tar.gz" openssl
+install_package "openssl-1.1.1w" "https://www.openssl.org/source/openssl-1.1.1w.tar.gz" openssl --if needs_openssl_102_300
+install_package "ruby-3.2.0" "http://ruby-lang.org/ruby/2.0/ruby-3.2.0.tar.gz"
 DEF
   assert_success
 
   unstub uname
-  unstub cc
-  # unstub openssl
+  unstub security
+  unstub brew
+  # Depending on the state of system `/usr/bin/openssl` in the test runner,
+  # `cc` might not have been called, so avoid unstubbing it since that would
+  # verify the number of invocations.
+  #unstub cc
+  unstub openssl
   unstub make
 
+  # No rpath on macOS, OpenSSL sets it itself: https://wiki.openssl.org/index.php/Compilation_and_Installation#Using_RPATHs
   assert_build_log <<OUT
-openssl-1.1.1w: [--prefix=${INSTALL_ROOT}/openssl,--openssldir=${INSTALL_ROOT}/openssl/ssl,--libdir=lib,zlib-dynamic,no-ssl3,shared,-Wl,-rpath,${INSTALL_ROOT}/openssl/lib]
+openssl-1.1.1w: [--prefix=${INSTALL_ROOT}/openssl,--openssldir=${INSTALL_ROOT}/openssl/ssl,--libdir=lib,zlib-dynamic,no-ssl3,shared]
 make -j 2
 make install_sw install_ssldirs
+ruby-3.2.0: [--prefix=$INSTALL_ROOT,--with-openssl-dir=$INSTALL_ROOT/openssl,--with-ext=openssl,psych,+] PKG_CONFIG_PATH=${TMP}/install/openssl/lib/pkgconfig
+PKG_CONFIG_PATH=${TMP}/install/openssl/lib/pkgconfig make -j 2
+make install
 OUT
+
+  run cat "$INSTALL_ROOT"/openssl/ssl/cert.pem
+  assert_output <<PEM
+System.keychain
+SystemRootCertificates.keychain
+PEM
 }
 
 @test "skip bundling OpenSSL if custom openssl dir was specified" {
